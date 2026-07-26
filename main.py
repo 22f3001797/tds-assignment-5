@@ -395,7 +395,7 @@ def check_guardrail(req: GuardrailRequest):
         secret_rel_posix = secret_rel.replace('\\', '/')
         secret_path_posix = posixpath.normpath(posixpath.join(home_dir_posix, secret_rel_posix))
         
-        # 1. Unquote URL encoding recursively
+        # 1. Unquote URL encoding recursively (handles %2e%2e, double encoding)
         raw_path = path
         for _ in range(5):
             unquoted = urllib.parse.unquote(raw_path)
@@ -410,17 +410,21 @@ def check_guardrail(req: GuardrailRequest):
         # 3. Expand variables and tilde
         raw_path = raw_path.replace("$HOME", home_dir_posix).replace("~", home_dir_posix).replace('\\', '/')
         
-        # Strip leading slashes if it's attempting relative traversal pretend-absolute
-        if not posixpath.isabs(raw_path):
-            resolved_posix = posixpath.normpath(posixpath.join(write_dir_posix, raw_path))
-        else:
-            resolved_posix = posixpath.normpath(raw_path)
+        # Handle shorthand absolute paths like /workspace/... by mapping to /home/agent/workspace/...
+        if raw_path.startswith("/workspace/"):
+            raw_path = posixpath.join(home_dir_posix, raw_path.lstrip('/'))
 
-        # Ensure write_dir_posix has trailing slash for prefix check
+        # 4. Resolve path relative to CWD (working directory), NOT write_dir
+        if posixpath.isabs(raw_path):
+            resolved_posix = posixpath.normpath(raw_path)
+        else:
+            resolved_posix = posixpath.normpath(posixpath.join(cwd_posix, raw_path))
+
+        # Prepare write_dir prefix for strict directory boundary check
         write_prefix = write_dir_posix if write_dir_posix.endswith('/') else write_dir_posix + '/'
 
         # Check 1: Must be strictly inside write_dir directory
-        if not (resolved_posix + '/').startswith(write_prefix):
+        if not (resolved_posix == write_dir_posix or resolved_posix.startswith(write_prefix)):
             return {"decision": "block", "reason": f"Write outside allowed directory {write_dir}"}
             
         # Check 2: Must not target secret file
