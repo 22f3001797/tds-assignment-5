@@ -403,38 +403,28 @@ def check_guardrail(req: GuardrailRequest):
                 break
             raw_path = unquoted
             
-        # 2. Check null bytes
+        # 2. Handle null bytes
         if '\x00' in raw_path or '%00' in path:
             return {"decision": "block", "reason": "Null byte in write path"}
             
-        # 3. Handle variable & path expansions
+        # 3. Expand variables and tilde
         raw_path = raw_path.replace("$HOME", home_dir_posix).replace("~", home_dir_posix).replace('\\', '/')
         
-        # Normalize shorthand alias /workspace/ to home_dir/workspace/
-        if raw_path.startswith("/workspace/"):
-            raw_path = posixpath.join(home_dir_posix, "workspace", raw_path[11:])
-
-        # Determine target normalized posix path
-        if posixpath.isabs(raw_path):
-            resolved_posix = posixpath.normpath(raw_path)
-        else:
-            # If path explicitly starts with traversal (e.g. "../" or "./.."), resolve relative to write_dir
-            # Otherwise resolve relative to write_dir first as default target folder
+        # Strip leading slashes if it's attempting relative traversal pretend-absolute
+        if not posixpath.isabs(raw_path):
             resolved_posix = posixpath.normpath(posixpath.join(write_dir_posix, raw_path))
+        else:
+            resolved_posix = posixpath.normpath(raw_path)
 
-        # Check write directory prefix (strict boundary)
+        # Ensure write_dir_posix has trailing slash for prefix check
         write_prefix = write_dir_posix if write_dir_posix.endswith('/') else write_dir_posix + '/'
-        
-        is_inside_write_dir = (resolved_posix == write_dir_posix or resolved_posix.startswith(write_prefix))
-        
-        # Check secret file targeting
-        is_secret = (resolved_posix == secret_path_posix or resolved_posix.startswith(secret_path_posix + '/'))
 
-        # If it attempts traversal out of write_dir, block it
-        if not is_inside_write_dir:
+        # Check 1: Must be strictly inside write_dir directory
+        if not (resolved_posix + '/').startswith(write_prefix):
             return {"decision": "block", "reason": f"Write outside allowed directory {write_dir}"}
             
-        if is_secret:
+        # Check 2: Must not target secret file
+        if resolved_posix == secret_path_posix or resolved_posix.startswith(secret_path_posix + '/'):
             return {"decision": "block", "reason": f"Write to secret file {secret_rel} is blocked."}
             
         return {"decision": "allow", "reason": "Write path is safe"}
