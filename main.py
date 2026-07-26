@@ -391,7 +391,7 @@ def check_guardrail(req: GuardrailRequest):
         
         home_dir_posix = home_dir.replace('\\', '/')
         cwd_posix = cwd.replace('\\', '/')
-        write_dir_posix = write_dir.replace('\\', '/').rstrip('/')
+        write_dir_posix = posixpath.normpath(write_dir.replace('\\', '/'))
         secret_rel_posix = secret_rel.replace('\\', '/')
         secret_path_posix = posixpath.normpath(posixpath.join(home_dir_posix, secret_rel_posix))
         
@@ -404,19 +404,23 @@ def check_guardrail(req: GuardrailRequest):
             raw_path = unquoted
             
         # 2. Handle null bytes
-        if '\x00' in raw_path:
+        if '\x00' in raw_path or '%00' in path:
             return {"decision": "block", "reason": "Null byte in write path"}
             
         # 3. Expand variables and tilde
         raw_path = raw_path.replace("$HOME", home_dir_posix).replace("~", home_dir_posix).replace('\\', '/')
         
-        if posixpath.isabs(raw_path):
-            resolved_posix = posixpath.normpath(raw_path)
-        else:
+        # Strip leading slashes if it's attempting relative traversal pretend-absolute
+        if not posixpath.isabs(raw_path):
             resolved_posix = posixpath.normpath(posixpath.join(write_dir_posix, raw_path))
-            
+        else:
+            resolved_posix = posixpath.normpath(raw_path)
+
+        # Ensure write_dir_posix has trailing slash for prefix check
+        write_prefix = write_dir_posix if write_dir_posix.endswith('/') else write_dir_posix + '/'
+
         # Check 1: Must be strictly inside write_dir directory
-        if not resolved_posix.startswith(write_dir_posix + '/'):
+        if not (resolved_posix + '/').startswith(write_prefix):
             return {"decision": "block", "reason": f"Write outside allowed directory {write_dir}"}
             
         # Check 2: Must not target secret file
