@@ -100,36 +100,45 @@ import urllib.request
 import urllib.error
 from typing import Dict, Any, List
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-)
-
-
-def _call_gemini(prompt: str, timeout: float = 12.0) -> str:
-    """Minimal, dependency-free Gemini call. Returns raw text or '' on failure."""
-    if not GEMINI_API_KEY:
+AIPIPE_TOKEN = os.environ.get("AIPIPE_TOKEN", "")
+AIPIPE_URL = "https://aipipe.org/openai/v1/chat/completions"
+AIPIPE_MODEL = "gpt-4o-mini"  # swap for "gpt-4.1-nano" or another supported model if you like
+ 
+ 
+def _call_llm(prompt: str, timeout: float = 15.0) -> str:
+    """Minimal, dependency-free AI Pipe (OpenAI-compatible) call. Returns raw text or '' on failure."""
+    if not AIPIPE_TOKEN:
+        print("[q11][aipipe] AIPIPE_TOKEN is EMPTY/unset in this process")
         return ""
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-        },
+        "model": AIPIPE_MODEL,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        GEMINI_URL, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        AIPIPE_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {AIPIPE_TOKEN}",
+        },
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-        return body["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
+        return body["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        print(f"[q11][aipipe] HTTPError {e.code}: {err_body[:500]}")
         return ""
-
+    except Exception as e:
+        print(f"[q11][aipipe] EXCEPTION {type(e).__name__}: {e}")
+        return ""
 
 def _evidence_lines(transcript: str) -> List[tuple]:
     out = []
@@ -253,7 +262,7 @@ def build_heuristic_decision(incident: Dict[str, Any], policy: Dict[str, Any],
                               catalog: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Drop-in replacement: same name/signature so the rest of q11.py needs no changes."""
     prompt = _build_prompt(incident, policy, catalog)
-    raw_text = _call_gemini(prompt)
+    raw_text = _call_llm(prompt)
 
     parsed: Dict[str, Any] = {}
     if raw_text:
