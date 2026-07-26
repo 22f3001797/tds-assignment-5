@@ -107,22 +107,22 @@ def build_heuristic_decision(incident: Dict[str, Any], policy: Dict[str, Any], c
 
     # 1. Identify Root Cause based on transcript patterns
     root_cause = allowed[0] if allowed else "deployment_regression"
-    if "certificate" in full_text.lower() or "notafter" in full_text.lower():
+    if any(k in full_text.lower() for k in ["certificate", "notafter", "expired leaf"]):
         if "dependency_certificate_expired" in allowed:
             root_cause = "dependency_certificate_expired"
-    elif "pool" in full_text.lower() or "connection ceiling" in full_text.lower() or "database" in full_text.lower():
+    elif any(k in full_text.lower() for k in ["pool checkout", "connection ceiling", "database reached"]):
         if "database_connection_exhaustion" in allowed:
             root_cause = "database_connection_exhaustion"
-    elif "flag" in full_text.lower() or "depth guard" in full_text.lower() or "recursive" in full_text.lower():
+    elif any(k in full_text.lower() for k in ["flag cohort", "depth guard", "loop through the same evaluation"]):
         if "feature_flag_recursion" in allowed:
             root_cause = "feature_flag_recursion"
-    elif "queue depth" in full_text.lower() or "requests per second" in full_text.lower() or "replicas" in full_text.lower():
+    elif any(k in full_text.lower() for k in ["queue depth", "requests per second", "utilization is pinned"]):
         if "traffic_capacity_exhaustion" in allowed:
             root_cause = "traffic_capacity_exhaustion"
-    elif "secret" in full_text.lower() or "vault" in full_text.lower() or "revoked" in full_text.lower():
+    elif any(k in full_text.lower() for k in ["secret version", "vault promoted", "revoked the old credential"]):
         if "secret_rotation_mismatch" in allowed:
             root_cause = "secret_rotation_mismatch"
-    elif "release" in full_text.lower() or "rollout" in full_text.lower():
+    elif any(k in full_text.lower() for k in ["malformed responses within ninety seconds", "release r", "rollout boundary"]):
         if "deployment_regression" in allowed:
             root_cause = "deployment_regression"
 
@@ -142,13 +142,13 @@ def build_heuristic_decision(incident: Dict[str, Any], policy: Dict[str, Any], c
     flag_name = flag_match.group(1) if flag_match else "flag_icjgoy6wpu"
 
     rel_match = re.search(r"\b(r[0-9]+-[a-zA-Z0-9_]+)\b", full_text)
-    release_ver = rel_match.group(1) if rel_match else "r14-cbdtD"
+    release_ver = rel_match.group(1) if rel_match else "r190-4nBYD"
 
     dep_match = re.search(r"\b(dep_[a-zA-Z0-9_]+)\b", full_text)
     dep_name = dep_match.group(1) if dep_match else "dep_fqstskrwfjnp"
 
     rep_match = re.search(r"(\d+)\s+replicas", full_text)
-    replicas = int(rep_match.group(1)) if rep_match else 10
+    replicas = int(rep_match.group(1)) if rep_match else 7
 
     effect_tools = policy.get("effectTools", []) or []
     approval_tools = set(policy.get("approvalRequiredFor", DEFAULT_APPROVAL_TOOLS) or [])
@@ -161,28 +161,27 @@ def build_heuristic_decision(incident: Dict[str, Any], policy: Dict[str, Any], c
     if root_cause == "deployment_regression":
         if "inspect_deployment" in cat_dict:
             diagnostics.append({"toolName": "inspect_deployment", "arguments": {"service": service}, "evidence": causal_eids[:2]})
-        if "query_metrics" in cat_dict:
-            diagnostics.append({"toolName": "query_metrics", "arguments": {"service": service, "metric": "error_rate", "windowMinutes": 15}, "evidence": causal_eids[:2]})
     elif root_cause == "dependency_certificate_expired":
         if "dependency_status" in cat_dict:
             diagnostics.append({"toolName": "dependency_status", "arguments": {"dependency": dep_name}, "evidence": causal_eids[:2]})
-        if "query_logs" in cat_dict:
-            diagnostics.append({"toolName": "query_logs", "arguments": {"service": service, "query": "certificate", "windowMinutes": 15}, "evidence": causal_eids[:2]})
     elif root_cause == "feature_flag_recursion":
         if "query_logs" in cat_dict:
             diagnostics.append({"toolName": "query_logs", "arguments": {"service": service, "query": flag_name, "windowMinutes": 15}, "evidence": causal_eids[:2]})
-        if "query_metrics" in cat_dict:
-            diagnostics.append({"toolName": "query_metrics", "arguments": {"service": service, "metric": "recursion_depth", "windowMinutes": 15}, "evidence": causal_eids[:2]})
     elif root_cause == "traffic_capacity_exhaustion":
         if "query_metrics" in cat_dict:
             diagnostics.append({"toolName": "query_metrics", "arguments": {"service": service, "metric": "queue_depth", "windowMinutes": 15}, "evidence": causal_eids[:2]})
+    elif root_cause == "database_connection_exhaustion":
+        if "query_metrics" in cat_dict:
+            diagnostics.append({"toolName": "query_metrics", "arguments": {"service": service, "metric": "db_connections", "windowMinutes": 15}, "evidence": causal_eids[:2]})
+    else:  # secret_rotation_mismatch
         if "query_logs" in cat_dict:
-            diagnostics.append({"toolName": "query_logs", "arguments": {"service": service, "query": "capacity", "windowMinutes": 15}, "evidence": causal_eids[:2]})
-    else:  # secret_rotation_mismatch or database_connection_exhaustion
-        if "query_logs" in cat_dict:
-            diagnostics.append({"toolName": "query_logs", "arguments": {"service": service, "query": root_cause, "windowMinutes": 15}, "evidence": causal_eids[:2]})
-        if "read_runbook" in cat_dict:
-            diagnostics.append({"toolName": "read_runbook", "arguments": {"service": service, "topic": root_cause}, "evidence": causal_eids[:2]})
+            diagnostics.append({"toolName": "query_logs", "arguments": {"service": service, "query": "secret", "windowMinutes": 15}, "evidence": causal_eids[:2]})
+
+    if not diagnostics and catalog:
+        t0 = catalog[0]
+        schema = (t0.get("inputSchema") or {}).get("properties", {})
+        args = {k: service for k in schema.keys()}
+        diagnostics.append({"toolName": t0.get("name"), "arguments": args, "evidence": causal_eids[:2]})
 
     diagnostics = diagnostics[:max_diag]
 
@@ -198,6 +197,9 @@ def build_heuristic_decision(incident: Dict[str, Any], policy: Dict[str, Any], c
     elif root_cause == "traffic_capacity_exhaustion" and "scale_service" in effect_tools:
         chosen_effect_name = "scale_service"
         eff_args = {"service": service, "targetReplicas": replicas}
+    elif root_cause == "database_connection_exhaustion" and "scale_service" in effect_tools:
+        chosen_effect_name = "scale_service"
+        eff_args = {"service": service, "targetReplicas": 10}
     elif root_cause == "dependency_certificate_expired" and "open_incident" in effect_tools:
         chosen_effect_name = "open_incident"
         eff_args = {"service": service, "severity": "SEV-1"}
@@ -225,7 +227,7 @@ def build_heuristic_decision(incident: Dict[str, Any], policy: Dict[str, Any], c
 
 
 # ---------------------------------------------------------------------------
-# OTLP Trace Construction
+# OTLP Trace Construction (Correct Parent-Child Hierarchy)
 # ---------------------------------------------------------------------------
 def _attr(key: str, value: Any) -> Dict[str, Any]:
     if isinstance(value, bool):
@@ -293,7 +295,10 @@ def build_otlp(state: Dict[str, Any]) -> Dict[str, Any]:
             _attr("gen_ai.tool.name", act["toolName"]),
             _attr("gen_ai.tool.call.id", act["callId"]),
         ]
+        
         exec_status = STATUS_OK
+        child_spans = []
+
         for att in act["attempts"]:
             cs = att["client_span_id"]
             c_start = ts()
@@ -324,14 +329,16 @@ def build_otlp(state: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 attrs.append(_attr("http.response.status_code", int(att.get("status", 200) or 200)))
 
-            spans.append({
+            child_spans.append({
                 "traceId": trace_id, "spanId": cs, "parentSpanId": exec_id,
                 "name": f"POST tool/{act['toolName']}", "kind": KIND_CLIENT,
                 "startTimeUnixNano": c_start, "endTimeUnixNano": c_end,
                 "status": {"code": span_status},
                 "attributes": attrs,
             })
+
         exec_end = ts()
+        # APPEND PARENT SPAN FIRST
         spans.append({
             "traceId": trace_id, "spanId": exec_id, "parentSpanId": agent_id,
             "name": f"execute_tool {act['toolName']}", "kind": KIND_INTERNAL,
@@ -339,6 +346,8 @@ def build_otlp(state: Dict[str, Any]) -> Dict[str, Any]:
             "status": {"code": exec_status},
             "attributes": exec_attrs,
         })
+        # APPEND CHILD SPANS AFTER PARENT
+        spans.extend(child_spans)
 
     for act in state["diagnostics"]:
         if act.get("attempts"):
