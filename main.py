@@ -89,6 +89,25 @@ async def log_requests(request: Request, call_next):
         raise e
 
     duration = round((time.time() - start_time) * 1000, 2)
+    # Capture response body for Q11 routes so we can diff what we actually returned
+    resp_body_str = None
+    path = request.url.path
+    if "/v2/incidents" in path or "/q11" in path:
+        try:
+            resp_chunks = []
+            async for chunk in response.body_iterator:
+                resp_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+            resp_body_bytes = b"".join(resp_chunks)
+            resp_body_str = resp_body_bytes.decode("utf-8", errors="ignore")
+            from fastapi.responses import Response as FResponse
+            response = FResponse(
+                content=resp_body_bytes,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+        except Exception:
+            pass
     log_entry = {
         "timestamp": time.time(),
         "method": request.method,
@@ -97,7 +116,8 @@ async def log_requests(request: Request, call_next):
         "body": body_str[:500000],
         "status_code": response.status_code,
         "duration_ms": duration,
-        "error": None
+        "error": None,
+        "response_body": resp_body_str,
     }
     
     path = request.url.path
@@ -177,7 +197,7 @@ FALLBACK_CONFIG = {
 
 def load_student_config():
     global CONFIG
-    email = os.environ.get("STUDENT_EMAIL") or os.environ.get("EMAIL")
+    email = os.environ.get("STUDENT_EMAIL") or os.environ.get("EMAIL") or "23f2005160@ds.study.iitm.ac.in"
     dir_path = os.path.dirname(os.path.abspath(__file__))
     for cmd in ["node", "nodejs"]:
         try:
@@ -391,7 +411,7 @@ def check_guardrail(req: GuardrailRequest):
         
         home_dir_posix = home_dir.replace('\\', '/')
         cwd_posix = cwd.replace('\\', '/')
-        write_dir_posix = posixpath.normpath(write_dir.replace('\\', '/'))
+        write_dir_posix = write_dir.replace('\\', '/').rstrip('/')
         secret_rel_posix = secret_rel.replace('\\', '/')
         secret_path_posix = posixpath.normpath(posixpath.join(home_dir_posix, secret_rel_posix))
         
@@ -404,23 +424,19 @@ def check_guardrail(req: GuardrailRequest):
             raw_path = unquoted
             
         # 2. Handle null bytes
-        if '\x00' in raw_path or '%00' in path:
+        if '\x00' in raw_path:
             return {"decision": "block", "reason": "Null byte in write path"}
             
         # 3. Expand variables and tilde
         raw_path = raw_path.replace("$HOME", home_dir_posix).replace("~", home_dir_posix).replace('\\', '/')
         
-        # Strip leading slashes if it's attempting relative traversal pretend-absolute
-        if not posixpath.isabs(raw_path):
-            resolved_posix = posixpath.normpath(posixpath.join(write_dir_posix, raw_path))
-        else:
+        if posixpath.isabs(raw_path):
             resolved_posix = posixpath.normpath(raw_path)
-
-        # Ensure write_dir_posix has trailing slash for prefix check
-        write_prefix = write_dir_posix if write_dir_posix.endswith('/') else write_dir_posix + '/'
-
+        else:
+            resolved_posix = posixpath.normpath(posixpath.join(write_dir_posix, raw_path))
+            
         # Check 1: Must be strictly inside write_dir directory
-        if not (resolved_posix + '/').startswith(write_prefix):
+        if not resolved_posix.startswith(write_dir_posix + '/'):
             return {"decision": "block", "reason": f"Write outside allowed directory {write_dir}"}
             
         # Check 2: Must not target secret file
